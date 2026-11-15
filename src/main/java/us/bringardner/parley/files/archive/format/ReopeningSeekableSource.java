@@ -23,34 +23,31 @@
  *
  * ~version~
  */
-package us.bringardner.parley.files.archive.zip;
+package us.bringardner.parley.files.archive.format;
 
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Objects;
 
-import us.bringardner.parley.files.archive.format.SeekableSource;
-
 /**
- * Random access to a deflated entry's uncompressed bytes. DEFLATE can't be entered in the
- * middle, so:
+ * Random access to bytes that can only be read as a stream from their start: a deflated zip
+ * entry, a gzipped tar. Such a stream can't be entered in the middle, so:
  * <ul>
- * <li>an entry of up to {@link #getMemoryLimit()} bytes is inflated into memory on the first read,
- * and read from there (a nested archive's index is read from its end, then its start);</li>
- * <li>a larger one is inflated as reads move forward, and from its start again whenever a read
+ * <li>bytes of up to {@link #getMemoryLimit()} are read into memory on the first read, and read
+ * from there (a nested archive's index is read from its end, then its start);</li>
+ * <li>more than that are read as reads move forward, and from their start again whenever a read
  * goes backwards.</li>
  * </ul>
  * The limit is the system property {@value #MEMORY_LIMIT_PROPERTY} (bytes), default
  * {@value #DEFAULT_MEMORY_LIMIT}.
  */
-final class InflatingSeekableSource implements SeekableSource {
-
+public final class ReopeningSeekableSource implements SeekableSource {
 	public static final String MEMORY_LIMIT_PROPERTY = "parley.files.archive.inflateInMemoryLimit";
 	public static final long DEFAULT_MEMORY_LIMIT = 16L * 1024 * 1024;
 
-	/** Opens the entry's inflated bytes from their start. */
-	interface Opener {
+	/** Opens the bytes from their start. */
+	public interface Opener {
 		InputStream open() throws IOException;
 	}
 
@@ -61,12 +58,17 @@ final class InflatingSeekableSource implements SeekableSource {
 	private long currentPos;
 	private boolean closed;
 
-	InflatingSeekableSource(Opener opener, long size) {
+	/**
+	 * @param opener opens the bytes from their start, each time it is asked
+	 * @param size how many bytes there are
+	 */
+	public ReopeningSeekableSource(Opener opener, long size) {
 		this.opener = Objects.requireNonNull(opener, "opener");
 		this.size = size;
 	}
 
-	static long getMemoryLimit() {
+	/** @return the most bytes held in memory */
+	public static long getMemoryLimit() {
 		String v = System.getProperty(MEMORY_LIMIT_PROPERTY);
 		if( v != null ) {
 			try {
@@ -103,7 +105,7 @@ final class InflatingSeekableSource implements SeekableSource {
 					int cnt = in.read(all, done, (int) size - done);
 					if( cnt < 0 ) {
 						all = null;
-						throw new EOFException("The entry inflates to " + done + " bytes, not its size, " + size);
+						throw new EOFException("The stream has " + done + " bytes, not " + size);
 					}
 					done += cnt;
 				}

@@ -351,6 +351,20 @@ public final class ZipReader implements ArchiveReader {
 		}
 	}
 
+	/**
+	 * @return the entry's compressed bytes as the archive holds them (any method, encrypted or not),
+	 *         for {@link ZipWriter#copyEntry(ZipArchiveEntry, InputStream)}. Nothing is checked.
+	 *         Closing it doesn't close src.
+	 */
+	public InputStream openRawStream(ArchiveEntry entry, SeekableSource src) throws IOException {
+		checkOpen();
+		ZipArchiveEntry e = mine(entry);
+		if( e.isDirectory() ) {
+			return EntryStreams.empty();
+		}
+		return new us.bringardner.parley.files.archive.format.SeekableSourceInputStream(src, dataStart(e, src), e.getCompressedSize(), EntryStreams.BUFFER_SIZE);
+	}
+
 	@Override
 	public InputStream openStream(ArchiveEntry entry, SeekableSource src) throws IOException {
 		checkOpen();
@@ -360,7 +374,7 @@ public final class ZipReader implements ArchiveReader {
 		}
 		EntryStreams.checkReadable(e);
 		long start = dataStart(e, src);
-		InputStream raw = new EntryStreams.SourceInputStream(src, start, e.getCompressedSize(), EntryStreams.BUFFER_SIZE);
+		InputStream raw = new us.bringardner.parley.files.archive.format.SeekableSourceInputStream(src, start, e.getCompressedSize(), EntryStreams.BUFFER_SIZE);
 		InputStream data = e.getMethod() == ZipArchiveEntry.STORED ? raw
 				: new EntryStreams.InflatingInputStream(raw, (int) Math.max(512, Math.min(EntryStreams.BUFFER_SIZE, e.getCompressedSize() + 1)));
 		return new EntryStreams.CheckedInputStream(data, e.getPath(), e.getSize(), e.getCrc());
@@ -378,8 +392,8 @@ public final class ZipReader implements ArchiveReader {
 		if( e.getMethod() == ZipArchiveEntry.STORED ) {
 			return us.bringardner.parley.files.archive.format.SeekableSources.range(src, start, e.getSize());
 		}
-		return new InflatingSeekableSource(() -> new EntryStreams.InflatingInputStream(
-				new EntryStreams.SourceInputStream(src, start, e.getCompressedSize(), EntryStreams.BUFFER_SIZE),
+		return new us.bringardner.parley.files.archive.format.ReopeningSeekableSource(() -> new EntryStreams.InflatingInputStream(
+				new us.bringardner.parley.files.archive.format.SeekableSourceInputStream(src, start, e.getCompressedSize(), EntryStreams.BUFFER_SIZE),
 				(int) Math.max(512, Math.min(EntryStreams.BUFFER_SIZE, e.getCompressedSize() + 1))), e.getSize());
 	}
 

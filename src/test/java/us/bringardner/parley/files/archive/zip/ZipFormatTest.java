@@ -335,7 +335,7 @@ public class ZipFormatTest {
 				byte[] noise = m.get("bin/noise.dat");
 				for(String limit : new String[] { null, "0" }) {
 					if( limit != null ) {
-						System.setProperty(InflatingSeekableSource.MEMORY_LIMIT_PROPERTY, limit);
+						System.setProperty(us.bringardner.parley.files.archive.format.ReopeningSeekableSource.MEMORY_LIMIT_PROPERTY, limit);
 					}
 					try (SeekableSource e = r.openSource(r.getEntry("bin/noise.dat"), src)) {
 						assertEquals(noise.length, e.length());
@@ -345,7 +345,7 @@ public class ZipFormatTest {
 							assertArrayEquals(Arrays.copyOfRange(noise, (int) pos, (int) pos + 10), got, "at " + pos);
 						}
 					} finally {
-						System.clearProperty(InflatingSeekableSource.MEMORY_LIMIT_PROPERTY);
+						System.clearProperty(us.bringardner.parley.files.archive.format.ReopeningSeekableSource.MEMORY_LIMIT_PROPERTY);
 					}
 				}
 			}
@@ -464,6 +464,35 @@ public class ZipFormatTest {
 		}
 		try (SeekableSource src = SeekableSources.of(bout.toByteArray()); ZipReader r = ZipReader.open(src)) {
 			assertNotNull(r.getEntry("café.txt"), r.getEntries().toString());
+		}
+	}
+
+	@Test
+	public void copyEntriesAsTheyAre() throws IOException {
+		Map<String, byte[]> m = sample();
+		for(boolean store : new boolean[] { false, true }) {
+			byte[] zip = jdkZip(m, store);
+			ByteArrayOutputStream bout = new ByteArrayOutputStream();
+			try (SeekableSource src = SeekableSources.of(zip); ZipReader r = ZipReader.open(src); ZipWriter w = new ZipWriter(bout)) {
+				for(ZipArchiveEntry e : r.getEntries()) {
+					try (InputStream raw = r.openRawStream(e, src)) {
+						w.copyEntry(e, raw);
+					}
+				}
+				List<ZipArchiveEntry> written = w.getWrittenEntries();
+				assertEquals(r.getEntries().size(), written.size());
+				assertEquals(r.getEntry("bin/noise.dat").getCompressedSize(), written.get(4).getCompressedSize());
+			}
+			Path f = tmp.resolve("copied" + store + ".zip");
+			Files.write(f, bout.toByteArray());
+			try (ZipFile z = new ZipFile(f.toFile())) {
+				for(Map.Entry<String, byte[]> e : m.entrySet()) {
+					if( e.getValue() != null ) {
+						assertArrayEquals(e.getValue(), read(z.getInputStream(z.getEntry(e.getKey()))), e.getKey());
+					}
+				}
+				assertEquals("entry comment", z.getEntry("readme.txt").getComment());
+			}
 		}
 	}
 }

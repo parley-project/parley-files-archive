@@ -97,6 +97,7 @@ public final class ZipWriter implements ArchiveWriter {
 
 	/** What the central directory needs of an entry written. */
 	private static final class Written {
+		String path;
 		byte[] name;
 		boolean utf8;
 		int flags;
@@ -119,36 +120,9 @@ public final class ZipWriter implements ArchiveWriter {
 		checkWritable();
 		closeEntry();
 		ZipArchiveEntry z = entry instanceof ZipArchiveEntry ? (ZipArchiveEntry) entry : ZipArchiveEntry.builder(entry).build();
+		Written w = prepare(z);
 		String path = z.getPath();
-		if( path.isEmpty() ) {
-			throw new ZipException("An entry needs a path (the archive's top folder isn't an entry)");
-		}
 		boolean dir = z.isDirectory();
-		String name = dir ? path + "/" : path;
-		if( !paths.add(name) ) {
-			throw new ZipException("Duplicate entry: " + name);
-		}
-		Written w = new Written();
-		w.name = name.getBytes(StandardCharsets.UTF_8);
-		if( w.name.length > 0xFFFF ) {
-			throw new ZipException("The entry name is longer than 65,535 bytes: " + path);
-		}
-		w.utf8 = needsUtf8(name) || needsUtf8(z.getComment());
-		w.comment = z.getComment() == null ? null : z.getComment().getBytes(StandardCharsets.UTF_8);
-		if( w.comment != null && w.comment.length > 0xFFFF ) {
-			throw new ZipException("The comment of " + path + " is longer than 65,535 bytes");
-		}
-		long mtime = z.getLastModified() == ArchiveEntry.UNKNOWN ? System.currentTimeMillis() : z.getLastModified();
-		w.dos = millisToDos(mtime);
-		w.mtimeSeconds = Math.floorDiv(mtime, 1000);
-		w.hasUt = w.mtimeSeconds >= Integer.MIN_VALUE && w.mtimeSeconds <= Integer.MAX_VALUE;
-		w.external = z.getExternalAttributes();
-		w.madeBy = z.getVersionMadeBy();
-		if( w.external == 0 ) {
-			long mode = dir ? S_IFDIR | 0755 : S_IFREG | 0644;
-			w.external = mode << 16 | (dir ? DOS_DIRECTORY : 0);
-			w.madeBy = HOST_UNIX << 8;
-		}
 		w.method = dir ? ZipArchiveEntry.STORED : z.getMethod();
 		w.offset = out.count;
 		boolean known = false;
@@ -174,11 +148,134 @@ public final class ZipWriter implements ArchiveWriter {
 		return open;
 	}
 
+	/** what the local and central headers hold of z, but its method, sizes and CRC */
+	private Written prepare(ZipArchiveEntry z) throws IOException {
+		String path = z.getPath();
+		if( path.isEmpty() ) {
+			throw new ZipException("An entry needs a path (the archive's top folder isn't an entry)");
+		}
+		boolean dir = z.isDirectory();
+		String name = dir ? path + "/" : path;
+		if( !paths.add(name) ) {
+			throw new ZipException("Duplicate entry: " + name);
+		}
+		Written w = new Written();
+		w.path = path;
+		w.name = name.getBytes(StandardCharsets.UTF_8);
+		if( w.name.length > 0xFFFF ) {
+			throw new ZipException("The entry name is longer than 65,535 bytes: " + path);
+		}
+		w.utf8 = needsUtf8(name) || needsUtf8(z.getComment());
+		w.comment = z.getComment() == null ? null : z.getComment().getBytes(StandardCharsets.UTF_8);
+		if( w.comment != null && w.comment.length > 0xFFFF ) {
+			throw new ZipException("The comment of " + path + " is longer than 65,535 bytes");
+		}
+		long mtime = z.getLastModified() == ArchiveEntry.UNKNOWN ? System.currentTimeMillis() : z.getLastModified();
+		w.dos = millisToDos(mtime);
+		w.mtimeSeconds = Math.floorDiv(mtime, 1000);
+		w.hasUt = w.mtimeSeconds >= Integer.MIN_VALUE && w.mtimeSeconds <= Integer.MAX_VALUE;
+		w.external = z.getExternalAttributes();
+		w.madeBy = z.getVersionMadeBy();
+		if( w.external == 0 ) {
+			long mode = dir ? S_IFDIR | 0755 : S_IFREG | 0644;
+			w.external = mode << 16 | (dir ? DOS_DIRECTORY : 0);
+			w.madeBy = HOST_UNIX << 8;
+		}
+		return w;
+	}
+
+	/**
+	 * Copies an entry from another archive as it is there: its compressed bytes are written as they
+	 * are (not inflated and deflated again), with its method, CRC-32, sizes, time, attributes and
+	 * comment. Any method and an encrypted entry are copied too.
+	 *
+	 * @param entry an entry a {@link ZipReader} read
+	 * @param raw its compressed bytes ({@link ZipReader#openRawStream(ArchiveEntry, us.bringardner.parley.files.archive.format.SeekableSource)});
+	 *        exactly its compressed size is read. It isn't closed.
+	 * @throws IOException if the path was written, or raw ends early
+	 */
+	public void copyEntry(ZipArchiveEntry entry, java.io.InputStream raw) throws IOException {
+		Objects.requireNonNull(entry, "entry");
+		Objects.requireNonNull(raw, "raw");
+		checkWritable();
+		closeEntry();
+		if( entry.getCompressedSize() < 0 || entry.getSize() < 0 || entry.getCrc() < 0 ) {
+			throw new ZipException(entry.getPath() + "'s sizes and CRC-32 aren't known: it can't be copied as it is");
+		}
+		Written w = prepare(entry);
+		w.method = entry.isDirectory() ? ZipArchiveEntry.STORED : entry.getMethod();
+		w.offset = out.count;
+		w.size = entry.getSize();
+		w.csize = entry.getCompressedSize();
+		w.crc = entry.getCrc();
+		// an encrypted entry keeps its data descriptor flag (its password check can depend on it)
+		boolean descriptor = entry.isEncrypted() && (entry.getFlags() & FLAG_DATA_DESCRIPTOR) != 0;
+		w.flags = (entry.getFlags() & FLAG_ENCRYPTED) | (w.utf8 ? FLAG_UTF8 : 0) | (descriptor ? FLAG_DATA_DESCRIPTOR : 0);
+		writeLocalHeader(w, !descriptor && (w.size >= ZIP64_MAGIC || w.csize >= ZIP64_MAGIC));
+		written.add(w);
+		byte[] buf = new byte[EntryStreams.BUFFER_SIZE];
+		long left = w.csize;
+		while( left > 0 ) {
+			int cnt = raw.read(buf, 0, (int) Math.min(buf.length, left));
+			if( cnt < 0 ) {
+				throw new java.io.EOFException(entry.getPath() + "'s compressed bytes end " + left + " bytes early");
+			}
+			out.write(buf, 0, cnt);
+			left -= cnt;
+		}
+		if( descriptor ) {
+			boolean wide = w.size >= ZIP64_MAGIC || w.csize >= ZIP64_MAGIC;
+			byte[] d = new byte[wide ? 24 : 16];
+			put32(d, 0, DATA_DESCRIPTOR_SIG);
+			put32(d, 4, w.crc);
+			if( wide ) {
+				put64(d, 8, w.csize);
+				put64(d, 16, w.size);
+			} else {
+				put32(d, 8, w.csize);
+				put32(d, 12, w.size);
+			}
+			out.write(d);
+		}
+	}
+
+	/**
+	 * @return the entries written so far, as the archive's central directory will hold them: an
+	 *         entry's sizes and CRC-32 are there once it has ended
+	 */
+	public java.util.List<ZipArchiveEntry> getWrittenEntries() {
+		java.util.List<ZipArchiveEntry> ret = new ArrayList<>(written.size());
+		for(Written w : written) {
+			ZipArchiveEntry.Builder b = ZipArchiveEntry.builder(w.path).directory(w.name[w.name.length - 1] == '/')
+					.lastModified(dosToMillis(w.dos));
+			b.method = w.method;
+			b.size = w.size;
+			b.compressedSize = w.csize;
+			b.crc = w.crc;
+			b.flags = w.flags;
+			b.versionMadeBy = w.madeBy;
+			b.externalAttributes = w.external;
+			ret.add(b.build());
+		}
+		return ret;
+	}
+
+	/** the version needed to extract an entry of this method (APPNOTE 4.4.3.2) */
+	static int versionFor(int method) {
+		switch (method) {
+		case ZipArchiveEntry.STORED: return VERSION_STORED;
+		case ZipArchiveEntry.DEFLATED: return VERSION_DEFLATE;
+		case 9: return 21;
+		case 12: return 46;
+		default: return 63;
+		}
+	}
+
 	private void writeLocalHeader(Written w, boolean zip64) throws IOException {
 		byte[] extra = extra(w, zip64, false, false, false);
 		byte[] h = new byte[LOCAL_HEADER_SIZE];
 		put32(h, 0, LOCAL_HEADER_SIG);
-		put16(h, 4, zip64 ? VERSION_ZIP64 : w.method == ZipArchiveEntry.STORED ? VERSION_STORED : VERSION_DEFLATE);
+		put16(h, 4, Math.max(zip64 ? VERSION_ZIP64 : 0, versionFor(w.method)));
 		put16(h, 6, w.flags);
 		put16(h, 8, w.method);
 		put32(h, 10, w.dos);
@@ -292,7 +389,7 @@ public final class ZipWriter implements ArchiveWriter {
 		boolean bigOffset = w.offset >= ZIP64_MAGIC;
 		boolean zip64 = bigSize || bigCsize || bigOffset;
 		byte[] extra = extra(w, false, bigSize, bigCsize, bigOffset);
-		int version = zip64 ? VERSION_ZIP64 : w.method == ZipArchiveEntry.STORED ? VERSION_STORED : VERSION_DEFLATE;
+		int version = Math.max(zip64 ? VERSION_ZIP64 : 0, versionFor(w.method));
 		byte[] h = new byte[CENTRAL_HEADER_SIZE];
 		put32(h, 0, CENTRAL_HEADER_SIG);
 		put16(h, 4, (w.madeBy & 0xFF00) | Math.max(version, w.madeBy & 0xFF));

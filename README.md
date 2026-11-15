@@ -6,7 +6,9 @@ family of Java libraries for implementing internet protocols:
 1. a zip reader and writer written from scratch from PKWARE's APPNOTE.TXT, with ZIP64, that reads
    with random access over any `FileSource` that can be read at a position, local or remote;
 2. `ArchiveFileSource`, which shows an archive file as a folder, in place, in the file system it is in;
-3. `ArchiveFileSourceFactory`, which opens one archive as a file system of its own (type `archive`).
+3. `ArchiveFileSourceFactory`, which opens one archive as a file system of its own (type `archive`);
+4. a tar reader and writer (plain and gzipped), and `Compression` (gzip), which fsh's archive
+   commands are to share.
 
 Compression and CRC-32 are the JDK's (`java.util.zip.Deflater`, `Inflater`, `CRC32`); the zip
 container is this module's own code. No third-party libraries. Requires Java 11 or later. Depends
@@ -44,6 +46,9 @@ already writes archives.
 | `ArchiveEntry` | A file or folder in an archive (immutable): path, folder or not, size, times, Unix mode |
 | `SeekableSource` | Bytes read at a position (no file pointer), so entries can be read at the same time. `SeekableSources` makes one from a byte array, a local `Path` or an `ISeekableInputStream` |
 | `ZipFormat`, `ZipReader`, `ZipStreamReader`, `ZipWriter`, `ZipArchiveEntry` | Zip |
+
+`ZipReader.openRawStream` and `ZipWriter.copyEntry` copy an entry from one archive to another as
+its compressed bytes, and `ZipWriter.getWrittenEntries()` gives the sizes written.
 
 Usable alone, by any code that reads or writes a zip:
 
@@ -83,7 +88,7 @@ try (ZipWriter zip = new ZipWriter(out)) {
    Zstandard ...) or encryption is listed, and fails with a `ZipException` naming its method when it
    is read. Archives split over several files are refused.
 7. `openSource(entry, source)` gives an entry random access: a stored entry is read in place; a
-   deflated one is inflated into memory on first read when it is up to 16 MB (system property
+   deflated one (`ReopeningSeekableSource`) is inflated into memory on first read when it is up to 16 MB (system property
    `parley.files.archive.inflateInMemoryLimit`, bytes), and otherwise inflated from its start
    whenever a read goes backwards (DEFLATE can't be entered in the middle). That is what makes a jar
    inside a war readable.
@@ -110,6 +115,27 @@ try (ZipWriter zip = new ZipWriter(out)) {
 Checked against the JDK (`ZipFile`, `ZipInputStream`, `ZipOutputStream`) in the tests, and by hand
 against Info-ZIP (`unzip -t`, `zipinfo`; archives made by `zip`, `zip -0` and `zip -` read back,
 symbolic links included).
+
+### Tar (`us.bringardner.parley.files.archive.tar`)
+
+1. `TarReader` (random access) and `TarStreamReader` (front to back) read every dialect: v7, POSIX
+   ustar (with its name prefix), GNU (long names and link names, base-256 numbers, its atime and
+   ctime) and pax (extended and global headers: path, linkpath, size, mtime, atime, ctime, uid, gid,
+   uname, gname). A header's checksum must be right. Names are UTF-8 when valid, else ISO-8859-1;
+   `getRawName()` keeps the name as stored.
+2. A tar has no index: opening a plain tar reads each header at its position, skipping the data (one
+   small read per entry); a gzipped one is decompressed once from start to end. An entry of a gzipped
+   tar is read by decompressing from the start to it.
+3. A hard link's bytes (and size) are its target's; a symbolic link's bytes are its target's name, as
+   in a zip archive; devices and fifos have none. A sparse file is listed, but reading it fails.
+4. `TarWriter` writes POSIX pax: ustar headers, with a pax extended header only when something
+   doesn't fit (a name that can't be split into prefix and name, or isn't ASCII; a long or non-ASCII
+   link target; a size of 8 GB or more; a time with milliseconds or out of range; a large id; a long
+   or non-ASCII user or group name). Each file's size must be given first, and exactly that many bytes
+   written. The archive ends with two zero blocks, padded to 10,240 bytes. Checked with GNU tar 1.35
+   and Python's tarfile.
+5. `Compression.GZIP` (the JDK's GZIP streams): `detect`, `decompress`, `compress(out, level)` and
+   `decompressIfCompressed`. Give `TarWriter` a `compress` stream for .tar.gz.
 
 ## Layer 2: the archive as FileSources (`us.bringardner.parley.files.archive`)
 
