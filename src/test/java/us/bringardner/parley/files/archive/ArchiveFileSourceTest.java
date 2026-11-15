@@ -399,4 +399,26 @@ public class ArchiveFileSourceTest {
 		assertThrows(IOException.class, bad::connect);
 		assertFalse(bad.isConnected());
 	}
+
+	@Test
+	public void tarGzIsAFolderToo() throws IOException {
+		FileSource tgz = memory.createFileSource("/pkg.tar.gz");
+		try (OutputStream out = tgz.getOutputStream()) {
+			out.write(us.bringardner.parley.files.archive.tar.TarFormatTest.write(true,
+					us.bringardner.parley.files.archive.tar.TarFormatTest.files()));
+		}
+		ArchiveFileSource a = new ArchiveFileSource(tgz);
+		assertEquals("tar", a.getArchiveFormat().getName());
+		assertEquals(Set.of("top"), new HashSet<>(Arrays.asList(a.list())));
+		assertEquals("alpha\n", text(a.getChild("top/a.txt")));
+		assertEquals("alpha\n", text(a.getChild("top/hard")), "a hard link reads its target");
+		assertEquals(0750, a.getChild("top/a.txt").canOwnerExecute() ? 0750 : 0, "the mode from the archive");
+		ISeekableInputStream in = a.getChild("top/a.txt").getSeekableInputStream();
+		try {
+			in.seek(2);
+			assertEquals('p', in.read());
+		} finally {
+			in.close();
+		}
+	}
 }
