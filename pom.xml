@@ -1,0 +1,91 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<!-- License, developer, SCM, URL, Java level and the Maven Central release profile
+	     all come from parley-parent. -->
+	<parent>
+		<groupId>us.bringardner.parley</groupId>
+		<artifactId>parley-parent</artifactId>
+		<version>2.0.0-SNAPSHOT</version>
+		<relativePath>../parley-parent/pom.xml</relativePath>
+	</parent>
+
+	<artifactId>parley-files-archive</artifactId>
+	<name>Parley Files Archive</name>
+	<description>Archives for parley-files: a from-scratch zip reader and writer (APPNOTE.TXT, with ZIP64) with
+		random access over any FileSource, local or remote; ArchiveFileSource, which shows an archive as a
+		folder; and ArchiveFileSourceFactory, which opens one archive as a file system of its own.
+		No third-party libraries.</description>
+
+	<properties>
+		<!-- Written to the jar manifest as Automatic-Module-Name -->
+		<parley.moduleName>us.bringardner.parley.files.archive</parley.moduleName>
+		<junit.version>5.11.4</junit.version>
+	</properties>
+
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>org.junit</groupId>
+				<artifactId>junit-bom</artifactId>
+				<version>${junit.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
+
+	<build>
+		<plugins>
+			<!-- Attaches the -sources.jar. The version comes from parley-parent; package (not deploy)
+			     so the source jar is attached BEFORE the deploy plugin runs. -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-source-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>attach-sources</id>
+						<phase>package</phase>
+						<goals>
+							<goal>jar-no-fork</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+
+	<!-- GitHub Packages. Maven Central releases use: mvn -Prelease clean deploy -->
+	<distributionManagement>
+		<repository>
+			<id>github</id>
+			<name>parley-project</name>
+			<url>https://maven.pkg.github.com/parley-project/parley-files-archive</url>
+		</repository>
+	</distributionManagement>
+
+	<dependencies>
+		<!-- FileSource, which the archive FileSources implement and read from. Compression and
+		     CRC-32 are the JDK's (java.util.zip); the zip container is this module's own code. -->
+		<dependency>
+			<groupId>us.bringardner.parley</groupId>
+			<artifactId>parley-files</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+		<!-- The shared FileSource test support -->
+		<dependency>
+			<groupId>us.bringardner.parley</groupId>
+			<artifactId>parley-files</artifactId>
+			<version>${project.version}</version>
+			<type>test-jar</type>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+</project>
