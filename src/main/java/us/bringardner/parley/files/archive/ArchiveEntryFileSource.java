@@ -54,7 +54,10 @@ import us.bringardner.parley.files.fileproxy.FileProxy;
  * <p>
  * Its permissions are the Unix mode the archive holds, where it holds one (read and execute;
  * nothing is writable), and otherwise readable, with folders executable. Its owner and group are
- * the archive file's. A symbolic link stored in an archive is a file whose bytes are its target.
+ * the archive file's. A symbolic link stored in an archive is a symbolic link here too (D78): it answers
+ * its own mode, time and length (that of its text) and {@link #getLinkText()}, and what it is asked to do
+ * (exist, be read or listed) it does as the entry it leads to. A relative target is taken from the link's
+ * folder and an absolute one from the archive's top, as the archive can't hold anything outside itself.
  */
 public class ArchiveEntryFileSource implements FileSource {
 
@@ -92,7 +95,89 @@ public class ArchiveEntryFileSource implements FileSource {
 	}
 
 	private ArchiveIndex.Node node() throws IOException {
-		return handle.node(entryPath);
+		return handle.node(realPath());
+	}
+
+	/** How many links are followed, in a path or a chain of them, before it is taken to be a loop. */
+	private static final int MAX_LINKS = 40;
+
+	/**
+	 * This path with every folder in it that is a symbolic link replaced by what it leads to (not the
+	 * last part, which is this file's own). A path that has no link in it is returned as it is.
+	 */
+	private String realPath() throws IOException {
+		String path = entryPath;
+		int links = 0;
+		int from = 0;
+		while( true ) {
+			int slash = path.indexOf('/', from);
+			if( slash < 0 ) {
+				return path;
+			}
+			String folder = path.substring(0, slash);
+			ArchiveIndex.Node n = handle.node(folder);
+			if( n != null && n.entry != null && n.entry.isSymbolicLink() ) {
+				if( ++links > MAX_LINKS ) {
+					return path;   // a loop: it leads nowhere, as the path is not in the archive
+				}
+				path = ArchiveEntry.normalize(targetOf(folder) + path.substring(slash));
+				from = 0;
+			} else {
+				from = slash + 1;
+			}
+		}
+	}
+
+	/** The path in the archive a link at linkPath points to, from its text. */
+	private String targetOf(String linkPath) throws IOException {
+		String text = textOf(linkPath);
+		if( text.startsWith("/") ) {
+			return ArchiveEntry.normalize(text);
+		}
+		String parent = ArchiveEntry.parentOf(linkPath);
+		return ArchiveEntry.normalize(parent == null || parent.isEmpty() ? text : parent + "/" + text);
+	}
+
+	/** What the archive holds in a symbolic link: the text of where it points (read, not followed). */
+	private String textOf(String linkPath) throws IOException {
+		try (InputStream in = handle.openStream(linkPath)) {
+			return new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+		}
+	}
+
+	private boolean isLink() throws IOException {
+		ArchiveIndex.Node n = node();
+		return n != null && n.entry != null && n.entry.isSymbolicLink();
+	}
+
+	/**
+	 * What this leads to: itself if it is not a link, the entry at the end of the links if it is (which may
+	 * not be in the archive), null if the links lead back to themselves.
+	 */
+	private ArchiveEntryFileSource followed() throws IOException {
+		ArchiveEntryFileSource f = this;
+		for(int hops = 0; hops < MAX_LINKS; hops++) {
+			if( !f.isLink() ) {
+				return f;
+			}
+			f = (ArchiveEntryFileSource) f.getLinkedTo();
+		}
+		return null;
+	}
+
+	/** The one that reading, listing and the like are done to. @throws FileNotFoundException if it leads nowhere */
+	private ArchiveEntryFileSource target() throws IOException {
+		ArchiveEntryFileSource f = followed();
+		if( f == null ) {
+			throw new FileNotFoundException(getAbsolutePath() + " (Too many levels of symbolic links)");
+		}
+		return f;
+	}
+
+	/** The text of where this link points, or null if this isn't a symbolic link. */
+	@Override
+	public String getLinkText() throws IOException {
+		return isLink() ? textOf(node().path) : null;
 	}
 
 	private FileSource child(String path) {
@@ -161,17 +246,29 @@ public class ArchiveEntryFileSource implements FileSource {
 
 	@Override
 	public boolean exists() throws IOException {
+		if( isLink() ) {
+			ArchiveEntryFileSource t = followed();
+			return t != null && t.exists();   // as a file: a link to nothing is not there
+		}
 		return node() != null;
 	}
 
 	@Override
 	public boolean isDirectory() throws IOException {
+		if( isLink() ) {
+			ArchiveEntryFileSource t = followed();
+			return t != null && t.isDirectory();
+		}
 		ArchiveIndex.Node n = node();
 		return n != null && n.directory;
 	}
 
 	@Override
 	public boolean isFile() throws IOException {
+		if( isLink() ) {
+			ArchiveEntryFileSource t = followed();
+			return t != null && t.isFile();
+		}
 		ArchiveIndex.Node n = node();
 		return n != null && !n.directory;
 	}
@@ -257,15 +354,24 @@ public class ArchiveEntryFileSource implements FileSource {
 		return handle.backing().getGroup();
 	}
 
+	/** Where a symbolic link points, which may not be in the archive; null if this isn't a link. */
 	@Override
-	public FileSource getLinkedTo() {
-		return null;
+	public FileSource getLinkedTo() throws IOException {
+		ArchiveIndex.Node n = node();
+		if( n == null || n.entry == null || !n.entry.isSymbolicLink() ) {
+			return null;
+		}
+		return child(targetOf(n.path));
 	}
 
 	// ---- listing
 
 	@Override
 	public String[] list() throws IOException {
+		if( isLink() ) {
+			ArchiveEntryFileSource t = followed();
+			return t == null ? null : t.list();
+		}
 		ArchiveIndex.Node n = node();
 		if( n == null || !n.directory ) {
 			return null;
@@ -288,6 +394,10 @@ public class ArchiveEntryFileSource implements FileSource {
 
 	@Override
 	public FileSource[] listFiles() throws IOException {
+		if( isLink() ) {
+			ArchiveEntryFileSource t = followed();
+			return t == null ? null : t.listFiles();
+		}
 		ArchiveIndex.Node n = node();
 		if( n == null || !n.directory ) {
 			return null;
@@ -340,8 +450,11 @@ public class ArchiveEntryFileSource implements FileSource {
 
 	@Override
 	public InputStream getInputStream() throws IOException {
+		if( isLink() ) {
+			return target().getInputStream();
+		}
 		check();
-		return handle.openStream(entryPath);
+		return handle.openStream(realPath());
 	}
 
 	@Override
@@ -368,8 +481,11 @@ public class ArchiveEntryFileSource implements FileSource {
 
 	@Override
 	public ISeekableInputStream getSeekableInputStream() throws IOException {
+		if( isLink() ) {
+			return target().getSeekableInputStream();
+		}
 		check();
-		return new ArchiveSeekableInputStream(this, handle.openSource(entryPath));
+		return new ArchiveSeekableInputStream(this, handle.openSource(realPath()));
 	}
 
 	/** "r" only: the archive is read only. */
@@ -381,8 +497,11 @@ public class ArchiveEntryFileSource implements FileSource {
 			}
 			throw new IllegalArgumentException("invalid mode = " + mode);
 		}
+		if( isLink() ) {
+			return target().getRandomAccessStream(mode);
+		}
 		check();
-		return new FileSourceRandomAccessStream(new ArchiveRandomAccessIoController(this, handle.openSource(entryPath)), mode);
+		return new FileSourceRandomAccessStream(new ArchiveRandomAccessIoController(this, handle.openSource(realPath())), mode);
 	}
 
 	/** @throws FileNotFoundException for a folder, or a path not in the archive */
@@ -413,6 +532,10 @@ public class ArchiveEntryFileSource implements FileSource {
 
 	@Override
 	public boolean canRead() throws IOException {
+		if( isLink() ) {
+			ArchiveEntryFileSource t = followed();
+			return t != null && t.canRead();
+		}
 		return exists() && handle.backing().canRead() && bit(0444, true);
 	}
 
@@ -423,6 +546,10 @@ public class ArchiveEntryFileSource implements FileSource {
 
 	@Override
 	public boolean canExecute() throws IOException {
+		if( isLink() ) {
+			ArchiveEntryFileSource t = followed();
+			return t != null && t.canExecute();
+		}
 		return bit(0111, isDirectory());
 	}
 

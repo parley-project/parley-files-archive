@@ -126,7 +126,7 @@ symbolic links included).
 2. A tar has no index: opening a plain tar reads each header at its position, skipping the data (one
    small read per entry); a gzipped one is decompressed once from start to end. An entry of a gzipped
    tar is read by decompressing from the start to it.
-3. A hard link's bytes (and size) are its target's; a symbolic link's bytes are its target's name, as
+3. A hard link's bytes (and size) are its target's; a symbolic link's bytes (what the archive holds) are its target's name, as
    in a zip archive; devices and fifos have none. A sparse file is listed, but reading it fails.
 4. `TarWriter` writes POSIX pax: ustar headers, with a pax extended header only when something
    doesn't fit (a name that can't be split into prefix and name, or isn't ASCII; a long or non-ASCII
@@ -188,8 +188,13 @@ read is kept, so the small headers cost one round trip per block over a remote p
 1. Read and execute come from the Unix mode the archive holds; without one, files are readable and
    folders executable. Nothing is writable. Owner and group are the archive file's.
 2. Times are the entry's; an implied folder has the archive file's modification time.
-3. A symbolic link stored in an archive (Info-ZIP keeps them) is a file whose bytes are its target
-   (`ArchiveEntry.isSymbolicLink()` says which); `getLinkedTo()` is null.
+3. A symbolic link stored in an archive (tar and Info-ZIP keep them) is a symbolic link here, as on Linux and macOS
+   (D78). It has its own mode, time and length (that of its text), `getLinkText()` is where it points and
+   `getLinkedTo()` the entry at that path. Whether it exists, what is read from it and what it lists are the entry it
+   leads to (`contentLength()` is that entry's size); a link to nothing, or to itself, is there but does not exist.
+   A relative target is taken from the link's folder, and an absolute one from the archive's top, since an archive
+   holds nothing outside itself. A path through a linked folder reaches what is in the folder it leads to.
+   (`ArchiveEntry.isSymbolicLink()` still says which entries are links; the bytes the archive holds for one are its text.)
 4. Locks are the FileSource default (`PROCESS` scope).
 
 ## Known limits
