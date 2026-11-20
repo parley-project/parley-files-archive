@@ -95,7 +95,7 @@ public final class FileSourceSources {
 		@Override
 		public synchronized long length() throws IOException {
 			if( length < 0 ) {
-				length = file.length();
+				length = file.contentLength();
 			}
 			return length;
 		}
